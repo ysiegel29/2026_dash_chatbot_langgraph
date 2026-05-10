@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dash-chatbot-langgraph"
+version = "0.1.0"
+description = "Dash chatbot GUI with LangGraph deep agent and Docker sandbox"
+requires-python = ">=3.11"
+dependencies = [
+    # Agent / LangGraph
+    "langgraph>=0.4",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-mcp-adapters>=0.1",
+    # Agent service
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    "httpx>=0.27",
+    "httpx-sse>=0.4",
+    "python-multipart>=0.0.9",
+    "aiofiles>=24.0",
+    # GUI
+    "dash>=2.18",
+    "dash-bootstrap-components>=1.6",
+    "dash-ag-grid>=31.3",
+    "plotly>=5.24",
+    "diskcache>=5.6",
+    "psutil>=5.9",
+    # Shared
+    "pydantic>=2.8",
+    "python-dotenv>=1.0",
+    # Future S3 (not yet implemented)
+    "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "moto[s3]>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+start-agent = "agent.service:main"
+start-gui   = "gui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent", "gui"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

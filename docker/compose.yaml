@@ -1,0 +1,47 @@
+# Optional: run agent + GUI together with docker compose.
+# The sandbox image is built separately; it is invoked by the agent at runtime
+# via `docker run`, not as a compose service.
+#
+# Usage:
+#   docker compose up --build
+#
+# The host's Docker socket is mounted so the agent can launch sandbox containers.
+
+services:
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent     # create if you want to containerise the agent
+    image: deepagent-agent:latest
+    env_file: ../.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data                     # SQLite persistence
+      - /var/run/docker.sock:/var/run/docker.sock  # so agent can run sandbox containers
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/threads"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  gui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gui       # create if you want to containerise the GUI
+    image: deepagent-gui:latest
+    env_file: ../.env
+    environment:
+      - AGENT_HOST=agent
+      - AGENT_PORT=8000
+    ports:
+      - "8050:8050"
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Run locally (no compose) instead:
+#   uv run start-agent   # terminal 1
+#   uv run start-gui     # terminal 2

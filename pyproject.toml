@@ -24,7 +24,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=24.0",
     # GUI
-    "dash>=2.18",
+    "dash[diskcache]>=2.18",   # diskcache extra pulls in diskcache + multiprocess for DiskcacheManager
     "dash-bootstrap-components>=1.6",
     "dash-ag-grid>=31.3",
     "plotly>=5.24",

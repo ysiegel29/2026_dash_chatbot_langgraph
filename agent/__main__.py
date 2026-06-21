@@ -9,5 +9,7 @@ logging.basicConfig(
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from dotenv import load_dotenv
+load_dotenv()
 from agent.service import main
 main()

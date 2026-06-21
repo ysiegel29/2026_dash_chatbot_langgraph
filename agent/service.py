@@ -72,9 +72,14 @@ def _db():
                 type        TEXT NOT NULL,
                 content     TEXT NOT NULL,
                 mime_type   TEXT NOT NULL DEFAULT 'application/octet-stream',
-                created_at  TEXT NOT NULL
+                created_at  TEXT NOT NULL,
+                message_id  TEXT
             )
         """)
+        # Migrate older DBs that predate the message_id column.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(artefacts)").fetchall()]
+        if "message_id" not in cols:
+            conn.execute("ALTER TABLE artefacts ADD COLUMN message_id TEXT")
         conn.commit()
         yield conn
         conn.commit()
@@ -181,7 +186,13 @@ async def get_thread(thread_id: str):
         for msg in snapshot.get("channel_values", {}).get("messages", []):
             role = getattr(msg, "type", "unknown")
             content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
-            messages.append({"id": getattr(msg, "id", ""), "role": role, "content": content})
+            messages.append({
+                "id": getattr(msg, "id", ""),
+                "role": role,
+                "content": content,
+                # Tool name lets the GUI rebuild the tool rows when a thread reopens.
+                "name": getattr(msg, "name", "") or "",
+            })
 
     # Fetch artefacts
     with _db() as conn:
@@ -221,6 +232,68 @@ def patch_thread(thread_id: str, req: ThreadPatch):
     return {"ok": True}
 
 
+@app.post("/threads/{thread_id}/generate-title")
+async def generate_title(thread_id: str):
+    """Summarise the conversation so far into a short thread title."""
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Thread not found")
+    thread = dict(row)
+
+    # Pull the conversation from the checkpointer.
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = await _checkpointer.aget(config) if _checkpointer else None
+    convo: list[str] = []
+    if snapshot:
+        for msg in snapshot.get("channel_values", {}).get("messages", []):
+            role = getattr(msg, "type", "")
+            if role not in ("human", "ai"):
+                continue
+            content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
+            if content.strip():
+                convo.append(f"{'User' if role == 'human' else 'Assistant'}: {content.strip()}")
+            if len(convo) >= 4:
+                break
+
+    if not convo:
+        return {"title": thread["title"]}
+
+    from langchain_core.messages import HumanMessage as _HM
+    from langchain_core.messages import SystemMessage as _SM
+
+    from .models import get_model
+
+    model = get_model(
+        provider=thread["provider"],
+        model=thread["model"],
+        temperature=0.0,
+    )
+    prompt = (
+        "Summarise this conversation as a short, specific chat title.\n"
+        "Rules: 3-6 words, Title Case, no surrounding quotes, no trailing punctuation.\n\n"
+        + "\n".join(convo)
+    )
+    try:
+        resp = await model.ainvoke([
+            _SM(content="You write concise chat titles."),
+            _HM(content=prompt),
+        ])
+        raw = resp.content if isinstance(resp.content, str) else json.dumps(resp.content)
+        title = raw.strip().strip('"').strip()[:60] or thread["title"]
+    except Exception as exc:
+        logger.warning("generate_title failed for %s: %s", thread_id, exc)
+        return {"title": thread["title"]}
+
+    with _db() as conn:
+        conn.execute(
+            "UPDATE threads SET title=?, updated_at=? WHERE id=?",
+            (title, _now(), thread_id),
+        )
+    logger.info("generate_title: thread=%s → %r", thread_id, title)
+    return {"title": title}
+
+
 # ── Messaging / streaming ─────────────────────────────────────────────────────
 
 @app.post("/threads/{thread_id}/messages")
@@ -246,6 +319,7 @@ async def send_message(thread_id: str, req: MessageRequest):
 
     async def event_generator():
         token_count = 0
+        turn_artefact_ids: list[str] = []   # artefacts created during this turn
         try:
             async for mode, chunk in graph.astream(
                 {"messages": [HumanMessage(content=req.content)]},
@@ -287,6 +361,14 @@ async def send_message(thread_id: str, req: MessageRequest):
                         # Emit tool call markers
                         if hasattr(delta, "get"):
                             for msg in delta.get("messages", []):
+                                # An AI message carrying tool_calls means the agent
+                                # is about to invoke a tool — surface what it's doing.
+                                for tc in getattr(msg, "tool_calls", None) or []:
+                                    name = tc.get("name", "tool") if isinstance(tc, dict) else getattr(tc, "name", "tool")
+                                    yield {
+                                        "event": "status",
+                                        "data": json.dumps({"label": f"Using {name}…"}),
+                                    }
                                 # ToolMessage signals a completed tool call
                                 if getattr(msg, "type", "") == "tool":
                                     raw_out = msg.content
@@ -322,6 +404,7 @@ async def send_message(thread_id: str, req: MessageRequest):
                                             _now(),
                                         ),
                                     )
+                                turn_artefact_ids.append(art["id"])
                                 yield {
                                     "event": "artefact",
                                     "data": json.dumps({
@@ -332,6 +415,24 @@ async def send_message(thread_id: str, req: MessageRequest):
                                         "mime_type": art.get("mime_type", ""),
                                     }),
                                 }
+
+            # Tag this turn's artefacts with the assistant message that produced
+            # them, so reopening the thread renders each chart/table under the
+            # right turn instead of all piling onto the last message.
+            if turn_artefact_ids:
+                final_ai_id = None
+                snap = await _checkpointer.aget(config) if _checkpointer else None
+                if snap:
+                    for m in snap.get("channel_values", {}).get("messages", []):
+                        if getattr(m, "type", "") == "ai" and getattr(m, "id", None):
+                            final_ai_id = m.id
+                if final_ai_id:
+                    placeholders = ",".join("?" * len(turn_artefact_ids))
+                    with _db() as conn:
+                        conn.execute(
+                            f"UPDATE artefacts SET message_id=? WHERE id IN ({placeholders})",
+                            (final_ai_id, *turn_artefact_ids),
+                        )
 
             # Update thread timestamp
             with _db() as conn:
@@ -374,7 +475,9 @@ async def upload_file(thread_id: str, file: UploadFile = File(...)):
         # For simplicity, we record it in the artefacts table as type="file".
         with _db() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO artefacts VALUES (?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO artefacts "
+                "(id, thread_id, name, type, content, mime_type, created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (str(uuid.uuid4()), thread_id, file.filename, "file",
                  b64, file.content_type or "application/octet-stream", _now()),
             )
@@ -416,11 +519,13 @@ def download_artefact(thread_id: str, artefact_id: str):
 def main():
     import sys
     import uvicorn
+    from dotenv import load_dotenv
 
     # Ensure project root is importable regardless of how the entry point was invoked
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if root not in sys.path:
         sys.path.insert(0, root)
+    load_dotenv(os.path.join(root, ".env"))
 
     host = os.environ.get("AGENT_HOST", "0.0.0.0")
     port = int(os.environ.get("AGENT_PORT", "8000"))

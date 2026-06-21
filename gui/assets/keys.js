@@ -13,17 +13,23 @@
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       var btn = document.getElementById("send-btn");
-      if (btn && !btn.disabled) {
+      // offsetParent is null when the button is hidden (a turn is streaming);
+      // don't fire a send in that state.
+      if (btn && !btn.disabled && btn.offsetParent !== null) {
         btn.click();
       }
     }
   }
 
+  var MAX_H = 400;
+
   function autoResize(e) {
     if (e.target.id !== "composer") return;
     var el = e.target;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    el.style.height = Math.min(el.scrollHeight, MAX_H) + "px";
+    // Only show a scrollbar once the box has hit its max height.
+    el.style.overflowY = el.scrollHeight > MAX_H ? "auto" : "hidden";
   }
 
   document.addEventListener("keydown", onKeydown);

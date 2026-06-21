@@ -5,42 +5,13 @@ import dash_bootstrap_components as dbc
 from dash import dcc, html
 
 from . import ids
-from .models_meta import PROVIDER_MODELS
 
 # ── Navbar ────────────────────────────────────────────────────────────────────
-
-def _provider_model_selects() -> html.Div:
-    provider_opts = [{"label": p.upper(), "value": p} for p in PROVIDER_MODELS]
-    first_provider = list(PROVIDER_MODELS.keys())[0]
-    model_opts = [{"label": m, "value": m} for m in PROVIDER_MODELS[first_provider]]
-
-    return html.Div(
-        [
-            dbc.Select(
-                id=ids.PROVIDER_SELECT,
-                options=provider_opts,
-                value=first_provider,
-                size="sm",
-                style={"width": "110px"},
-            ),
-            dbc.Select(
-                id=ids.MODEL_SELECT,
-                options=model_opts,
-                value=model_opts[0]["value"],
-                size="sm",
-                style={"width": "180px"},
-            ),
-        ],
-        className="model-selector",
-        style={"display": "flex", "gap": ".4rem", "alignItems": "center"},
-    )
-
 
 def navbar() -> html.Div:
     return html.Div(
         [
-            html.Span("✦ AI Assistant", className="brand"),
-            _provider_model_selects(),
+            html.Span("AI Assistant", className="brand"),
             html.Button("🌙", id=ids.THEME_TOGGLE, title="Toggle dark/light mode"),
         ],
         id="navbar",
@@ -70,6 +41,17 @@ def sidebar() -> html.Div:
 
 # ── Chat area ─────────────────────────────────────────────────────────────────
 
+# Flat (stroke) paperclip icon as an inline SVG data URI — no emoji.
+_PAPERCLIP_SVG = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' "
+    "viewBox='0 0 24 24' fill='none' stroke='%236c757d' stroke-width='2' "
+    "stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21.44 11.05l-9.19 "
+    "9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48'/"
+    "%3E%3C/svg%3E"
+)
+
+
 def _composer() -> html.Div:
     return html.Div(
         html.Div(
@@ -78,13 +60,11 @@ def _composer() -> html.Div:
                     [
                         dcc.Upload(
                             id=ids.UPLOAD,
-                            children=html.Button(
-                                "📎",
+                            className="attach-btn",
+                            children=html.Img(
+                                src=_PAPERCLIP_SVG,
+                                className="attach-icon",
                                 title="Upload file",
-                                style={
-                                    "background": "none", "border": "none",
-                                    "cursor": "pointer", "fontSize": "1.1rem",
-                                },
                             ),
                             multiple=False,
                         ),
@@ -95,6 +75,12 @@ def _composer() -> html.Div:
                             style={"width": "100%"},
                         ),
                         html.Button("➤", id=ids.SEND_BTN, title="Send (Enter)"),
+                        html.Button(
+                            html.Span(className="stop-icon"),
+                            id=ids.STOP_BTN,
+                            title="Stop generating",
+                            style={"display": "none"},
+                        ),
                     ],
                     id="composer-row",
                 ),
@@ -124,8 +110,10 @@ def stores() -> list:
         dcc.Store(id=ids.THREAD_ID_STORE, storage_type="local"),
         dcc.Store(id=ids.THREADS_DATA_STORE, data=[]),
         dcc.Store(id=ids.MESSAGES_STORE, data=[]),
+        dcc.Store(id=ids.PENDING_SEND, data=None),
         dcc.Store(id=ids.THEME_STORE, storage_type="local", data="light"),
         dcc.Store(id=ids.UPLOAD_STORE, data=None),
+        dcc.Store(id=ids.GRAPH_THEME_DUMMY),
         dcc.Download(id="artefact-download"),
         # Fires exactly once on page load to bootstrap thread list
         dcc.Interval(id="init-interval", interval=200, max_intervals=1),

@@ -60,9 +60,10 @@ def run(
             "--cpus=1.0",
             "--read-only",
             "--tmpfs", "/tmp:size=256m",
-            "--tmpfs", f"{workdir}:size=512m,exec",   # writable workspace
-            "-v", f"{host_dir}:{workdir}",
+            "-v", f"{host_dir}:{workdir}",            # writable workspace (also read back after)
             "--workdir", workdir,
+            "-e", "MPLCONFIGDIR=/tmp/matplotlib",     # writable cache dir (root FS is read-only)
+            "-e", "HOME=/tmp",                        # generic fallback for tools writing to ~
             image,
             *cmd,
         ]

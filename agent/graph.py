@@ -69,7 +69,17 @@ DOWNLOADS (save_artefact):
   - NEVER use save_artefact for charts or tables — use render_plotly / render_table
     so they appear inline. If you think the data is "too large", filter it first.
 
-Always explain what you are doing in plain language.
+OUTPUT DISCIPLINE — never duplicate artefact content in your text:
+  - When you call render_table, render_plotly, build_chart, or render_html, the
+    rendered artefact IS the output. Your text reply must ONLY briefly describe it
+    in 1–2 sentences.
+  - Do NOT also write the data as a markdown table, restate the rows/values, or
+    paste the chart's underlying numbers. That produces the same content twice.
+  - Good: "Here's a table of 5 sample cars with their price and mpg."
+  - Bad: a sentence followed by a full | col | col | markdown table.
+
+Always explain what you are doing in plain language, but keep it brief when an
+artefact already carries the content.
 """
 
 # Max chars of a single ToolMessage to include in LLM context.

@@ -13,7 +13,9 @@ from httpx_sse import connect_sse
 
 
 def _base() -> str:
-    host = os.environ.get("AGENT_HOST", "127.0.0.1")
+    # AGENT_CONNECT_HOST is the address the GUI connects TO (default 127.0.0.1).
+    # AGENT_HOST is the bind address for the server (0.0.0.0) — don't reuse it here.
+    host = os.environ.get("AGENT_CONNECT_HOST", "127.0.0.1")
     port = os.environ.get("AGENT_PORT", "8000")
     return f"http://{host}:{port}"
 
@@ -59,6 +61,13 @@ def rename_thread(thread_id: str, title: str) -> None:
     ).raise_for_status()
 
 
+def generate_title(thread_id: str) -> str:
+    """Ask the agent service to summarise the thread into a short title."""
+    r = httpx.post(f"{_base()}/threads/{thread_id}/generate-title", timeout=30)
+    r.raise_for_status()
+    return r.json().get("title", "")
+
+
 def update_thread_model(thread_id: str, provider: str, model: str, temperature: float) -> None:
     httpx.patch(
         f"{_base()}/threads/{thread_id}",
@@ -74,7 +83,11 @@ def stream_message(thread_id: str, content: str) -> Iterator[dict]:
 
     Caller should parse `data` as JSON.
     """
-    with httpx.Client(timeout=None) as http_client:
+    # `read` is the max gap *between* SSE events, not the total duration — it resets
+    # on every token. A long silence means the agent has stalled, so surface an error
+    # instead of leaving the UI stuck on "Thinking…" forever (read=None = infinite).
+    read_timeout = float(os.environ.get("AGENT_STREAM_READ_TIMEOUT", "180"))
+    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=10.0, pool=10.0)) as http_client:
         with connect_sse(
             http_client,
             "POST",

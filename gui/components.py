@@ -17,8 +17,6 @@ Each message is a dict:
 """
 from __future__ import annotations
 
-import json
-
 import json as _json
 
 import dash_ag_grid as dag
@@ -26,7 +24,6 @@ from dash import dcc, html
 
 from . import ids
 from .client import get_artefact_url
-
 
 # ── Artefact chip ─────────────────────────────────────────────────────────────
 
@@ -66,11 +63,52 @@ def _render_text(block: dict) -> html.Div:
     )
 
 
-def _render_plotly(block: dict) -> html.Div:
+# Brand-green palettes (shades of --bg-bubble-u) applied to any trace that did not
+# set its own colour. Dark mode uses lighter greens so lines stay visible. These
+# must stay in sync with the client-side re-theming in ``register_callbacks``.
+_GREEN_COLORWAY = {
+    "light": ["#039c88", "#43b3a0", "#026e60", "#5cc9b8", "#01786b"],
+    "dark":  ["#5cc9b8", "#7ad6c8", "#43b3a0", "#9ae3d8", "#2e9a89"],
+}
+# Text + gridline colours per theme (also mirrored client-side).
+_FONT_COLOR = {"light": "#444444", "dark": "#d0d0d0"}
+_GRID_COLOR = {"light": "#e0e0e0", "dark": "#444444"}
+
+
+def _apply_theme_defaults(fig_dict: dict, theme: str = "light") -> dict:
+    """Make a Plotly figure match the chat theme on first paint: transparent
+    backgrounds so the bubble colour shows through, a green colourway for unstyled
+    traces, and theme-correct font + gridline colours.
+
+    The same values are re-applied client-side in ``register_callbacks`` so charts
+    follow live dark/light toggles after they're rendered."""
+    if not isinstance(fig_dict, dict):
+        return fig_dict
+    theme = "dark" if theme == "dark" else "light"
+    font = _FONT_COLOR[theme]
+    grid = _GRID_COLOR[theme]
+    layout = fig_dict.setdefault("layout", {})
+    # Force transparent — overrides any template (e.g. plotly_white) baked in.
+    layout["paper_bgcolor"] = "rgba(0,0,0,0)"
+    layout["plot_bgcolor"] = "rgba(0,0,0,0)"
+    layout.setdefault("font", {})["color"] = font
+    for axis in ("xaxis", "yaxis"):
+        ax = layout.setdefault(axis, {})
+        ax["gridcolor"] = grid
+        ax["zerolinecolor"] = grid
+        ax["linecolor"] = grid
+    # Only set a default palette when the figure didn't choose one itself; this
+    # leaves explicit per-trace colours and colorscales (e.g. Viridis) untouched.
+    layout.setdefault("colorway", _GREEN_COLORWAY[theme])
+    return fig_dict
+
+
+def _render_plotly(block: dict, theme: str = "light") -> html.Div:
     try:
         content = block.get("content", "{}")
         # Pass the raw dict directly — avoids pio round-trip and plotly version skew
         fig_dict = _json.loads(content) if isinstance(content, str) else content
+        fig_dict = _apply_theme_defaults(fig_dict, theme)
         return html.Div(
             dcc.Graph(
                 figure=fig_dict,
@@ -96,9 +134,15 @@ def _render_table(block: dict) -> html.Div:
             dag.AgGrid(
                 rowData=rows,
                 columnDefs=col_defs,
+                className="ag-theme-alpine compact-grid",
                 defaultColDef={"resizable": True, "minWidth": 80},
-                dashGridOptions={"pagination": True, "paginationPageSize": 20},
-                style={"height": "320px"},
+                dashGridOptions={
+                    "pagination": True,
+                    "paginationPageSize": 20,
+                    "rowHeight": 24,
+                    "headerHeight": 28,
+                },
+                style={"height": "280px"},
             ),
             className="artefact-embed",
         )
@@ -127,12 +171,12 @@ def _render_image(block: dict) -> html.Div:
     )
 
 
-def _render_artefact_inline(block: dict, thread_id: str) -> html.Div:
+def _render_artefact_inline(block: dict, thread_id: str, theme: str = "light") -> html.Div:
     atype = block.get("type", "file")
     content = block.get("content", "")
 
     if atype == "plotly":
-        return _render_plotly({"content": content})
+        return _render_plotly({"content": content}, theme)
     if atype == "table":
         return _render_table({"content": content})
     if atype == "html":
@@ -152,42 +196,59 @@ _BLOCK_RENDERERS = {
 }
 
 
-def render_blocks(blocks: list[dict], thread_id: str = "") -> list:
-    """Convert a list of typed blocks into Dash component children."""
-    children = []
-    chips = []
+def _split_render(blocks: list[dict], thread_id: str = "", theme: str = "light") -> tuple[list, list]:
+    """Render blocks split into (inline, embeds).
+
+    `inline` are text/markdown bits that belong inside the narrow chat bubble.
+    `embeds` are charts/tables/html/images/chips that should span the full
+    conversation column instead of being squeezed into the bubble's max-width.
+    """
+    inline: list = []
+    embeds: list = []
+    chips: list = []
 
     for block in blocks:
         btype = block.get("type", "text")
 
         if btype in _BLOCK_RENDERERS:
-            children.append(_BLOCK_RENDERERS[btype](block))
+            content = block.get("content", "")
+            # Skip empty text blocks (e.g. tool-calling AI messages) so they
+            # don't render as empty bubbles.
+            if isinstance(content, str) and not content.strip():
+                continue
+            inline.append(_BLOCK_RENDERERS[btype](block))
 
         elif btype == "plotly":
-            children.append(_render_plotly(block))
+            embeds.append(_render_plotly(block, theme))
 
         elif btype == "table":
-            children.append(_render_table(block))
+            embeds.append(_render_table(block))
 
         elif btype == "html":
-            children.append(_render_html(block))
+            embeds.append(_render_html(block))
 
         elif btype == "image":
-            children.append(_render_image(block))
+            embeds.append(_render_image(block))
 
         elif btype == "artefact":
             # Render inline if it's a visual type; always add a download chip
             if block.get("artefact_type") in ("plotly", "table", "html", "image"):
-                children.append(_render_artefact_inline(block, thread_id))
+                embeds.append(_render_artefact_inline(block, thread_id, theme))
             chips.append(artefact_chip(block, thread_id))
 
         else:
-            children.append(html.Pre(str(block.get("content", ""))))
+            inline.append(html.Pre(str(block.get("content", ""))))
 
     if chips:
-        children.append(html.Div(chips, className="artefact-bar"))
+        embeds.append(html.Div(chips, className="artefact-bar"))
 
-    return children
+    return inline, embeds
+
+
+def render_blocks(blocks: list[dict], thread_id: str = "", theme: str = "light") -> list:
+    """Flat render (inline + embeds together). Kept for callers that don't split."""
+    inline, embeds = _split_render(blocks, thread_id, theme)
+    return inline + embeds
 
 
 # ── Tool call row ─────────────────────────────────────────────────────────────
@@ -197,7 +258,7 @@ def tool_row(tool_name: str, output: str) -> html.Details:
     preview = output[:PREVIEW] + ("…" if len(output) > PREVIEW else "")
     return html.Details(
         [
-            html.Summary([f"⚙ {tool_name}  ", html.Small(f"({len(output)} chars)", style={"opacity": ".6"})]),
+            html.Summary([f"{tool_name}  ", html.Small(f"({len(output)} chars)", style={"opacity": ".6"})]),
             html.Pre(preview, style={"whiteSpace": "pre-wrap", "margin": ".25rem 0 0", "fontSize": ".78rem"}),
         ],
         className="tool-row",
@@ -206,34 +267,55 @@ def tool_row(tool_name: str, output: str) -> html.Details:
 
 # ── Full message row ──────────────────────────────────────────────────────────
 
-def message_row(msg: dict, thread_id: str = "") -> html.Div:
+def message_row(msg: dict, thread_id: str = "", theme: str = "light") -> html.Div:
     role = msg.get("role", "assistant")
     blocks = msg.get("blocks", [])
     tool_calls = msg.get("tool_calls", [])
 
-    content_children = render_blocks(blocks, thread_id)
+    inline, embeds = _split_render(blocks, thread_id, theme)
     tool_children = [tool_row(t["tool"], t.get("output", "")) for t in tool_calls]
 
-    return html.Div(
-        [
+    content = inline + embeds
+    # Charts/tables/images stay inside the bubble, but widen it to the full column.
+    bubble_cls = "bubble wide" if embeds else "bubble"
+
+    children = []
+    if content:  # skip empty messages so they don't render as blank bubbles
+        children.append(
             html.Div(
-                html.Div(content_children, className="bubble"),
+                html.Div(content, className=bubble_cls),
                 className=f"message-row {role}",
-            ),
-            *([html.Div(tool_children)] if tool_children else []),
-        ],
-        id=f"msg-{msg.get('id', '')}",
-    )
+            )
+        )
+    if tool_children:
+        children.append(html.Div(tool_children))
+
+    return html.Div(children, id=f"msg-{msg.get('id', '')}")
 
 
 # ── Streaming placeholder ─────────────────────────────────────────────────────
 
-def streaming_bubble(blocks: list[dict]) -> html.Div:
-    """In-progress assistant bubble updated via set_props."""
-    content = render_blocks(blocks)
-    content.append(html.Span(className="streaming-dot", style={"marginLeft": ".25rem"}))
+def streaming_bubble(blocks: list[dict], status: str | None = None, theme: str = "light") -> html.Div:
+    """In-progress assistant bubble updated via set_props.
+
+    `status` is an animated, Claude-style shimmer line describing what the agent
+    is doing right now (e.g. "Thinking…", "Using run_python…"). It is shown while
+    work is in progress and cleared once the model starts emitting tokens.
+    """
+    inline, embeds = _split_render(blocks, theme=theme)
+
+    content = list(inline) + list(embeds)
+    if status:
+        # Animated shimmer text describing the current step.
+        content.append(html.Span(status, className="agent-status"))
+    elif not content:
+        content.append(html.Span("Thinking…", className="agent-status"))
+    else:
+        content.append(html.Span(className="streaming-dot", style={"marginLeft": ".25rem"}))
+
+    bubble_cls = "bubble wide" if embeds else "bubble"
     return html.Div(
-        html.Div(content, className="bubble"),
+        html.Div(content, className=bubble_cls),
         className="message-row assistant",
     )
 
